@@ -65,6 +65,7 @@ function handleReset(req, res) {
   estimations = participants.map(({ id, name }) => ({ participant: { id, name } }));
   sendEstimations();
   sendIds();
+  res.sendStatus(200);
 }
 
 function handleEstimation(req, res) {
@@ -75,6 +76,7 @@ function handleEstimation(req, res) {
     }
   });
   sendEstimations();
+  res.sendStatus(200);
 }
 
 const app = express();
