@@ -7,6 +7,7 @@ const { PORT = 3001 } = process.env;
 let spectators = [];
 let participants = [];
 let estimations = [];
+let keepAliveTimeout;
 
 function writeEventStreamHeaders(res) {
   res.writeHead(200, {
@@ -28,6 +29,20 @@ function writeId(res, id) {
   res.write(`data: ${JSON.stringify(id)}\n\n`);
 }
 
+function keepAlive() {
+  if (!keepAliveTimeout) {
+    keepAliveTimeout = setTimeout(() => {
+      keepAliveTimeout = undefined;
+      const all = [...participants, ...spectators];
+
+      if (all.length) {
+        all.forEach(({ res }) => res.write(':\n\n'));
+        keepAlive();
+      }
+    }, 30000);
+  }
+}
+
 function sendIds() {
   participants.forEach(({ id, res }) => writeId(res, id));
 }
@@ -42,6 +57,8 @@ function handleSpectator(req, res) {
   req.on('close', () => {
     spectators = spectators.filter(spectator => spectator.id !== id);
   });
+
+  keepAlive();
 }
 
 function handleParticipant(req, res) {
@@ -59,6 +76,8 @@ function handleParticipant(req, res) {
     estimations = estimations.filter(estimation => estimation.participant.id !== id);
     sendEstimations();
   });
+
+  keepAlive();
 }
 
 function handleReset(req, res) {
