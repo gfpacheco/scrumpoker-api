@@ -1,14 +1,22 @@
 import cors from 'cors';
-import express, { Request, Response } from 'express';
-import Estimation from './Estimation';
+import express, { NextFunction, Request, Response } from 'express';
+import Guest from './Guest';
 import Participant from './Participant';
+import Room from './Room';
 import Spectator from './Spectator';
+
+declare global {
+  namespace Express {
+    interface Request {
+      room: Room;
+    }
+  }
+}
 
 const { PORT = 3001 } = process.env;
 
-let spectators: Spectator[] = [];
-let participants: Participant[] = [];
-let estimations: Estimation[] = [];
+let guests: Guest[] = [];
+let rooms: Room[] = [];
 let keepAliveTimeout: NodeJS.Timeout | undefined;
 
 function writeEventStreamHeaders(res: Response) {
@@ -19,23 +27,30 @@ function writeEventStreamHeaders(res: Response) {
   });
 }
 
-function writeEstimations(res: Response) {
-  res.write(`data: ${JSON.stringify(estimations)}\n\n`);
+function writeData(res: Response, data: any) {
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
-function sendEstimations() {
-  spectators.forEach(({ res }) => writeEstimations(res));
+function sendRooms() {
+  guests.forEach(g => writeData(g.res, rooms));
+}
+
+function sendParticipants(room: Room) {
+  room.spectators.forEach(s => writeData(s.res, room.participants));
 }
 
 function writeId(res: Response, id: number) {
-  res.write(`data: ${JSON.stringify(id)}\n\n`);
+  writeData(res, id);
 }
 
 function keepAlive() {
   if (!keepAliveTimeout) {
     keepAliveTimeout = setTimeout(() => {
       keepAliveTimeout = undefined;
-      const all = [...participants, ...spectators];
+      const all = rooms.reduce(
+        (partial, room) => [...partial, ...room.participants, ...room.spectators],
+        guests,
+      );
 
       if (all.length) {
         all.forEach(({ res }) => res.write(':\n\n'));
@@ -45,84 +60,120 @@ function keepAlive() {
   }
 }
 
-function sendIds() {
-  participants.forEach(({ id, res }) => writeId(res, id));
+function sendIds(room: Room) {
+  room.participants.forEach(p => writeId(p.res, p.id));
+}
+
+function handleGuest(req: Request, res: Response) {
+  const guest = new Guest(res);
+  guests.push(guest);
+
+  writeEventStreamHeaders(res);
+  writeData(res, rooms);
+
+  req.on('close', () => {
+    guests = guests.filter(g => g.id !== guest.id);
+  });
+
+  keepAlive();
+}
+
+function useRoom(req: Request, res: Response, next: NextFunction) {
+  const roomId = parseInt(req.params.roomId);
+  const existingRoom = rooms.find(r => r.id === roomId);
+  req.room = existingRoom ?? new Room(roomId);
+
+  if (!existingRoom) {
+    rooms.push(req.room);
+  }
+
+  next();
+}
+
+function closeRoomIfNecessary(room: Room) {
+  if (!room.spectators.length && !room.participants.length) {
+    rooms = rooms.filter(r => r.id !== room.id);
+  }
+
+  sendRooms();
 }
 
 function handleSpectator(req: Request, res: Response) {
-  const id = Date.now();
-  spectators.push(new Spectator(id, res));
+  const spectator = new Spectator(res);
+  req.room.spectators.push(spectator);
 
   writeEventStreamHeaders(res);
-  writeEstimations(res);
+  writeData(res, req.room.participants);
+  sendRooms();
 
   req.on('close', () => {
-    spectators = spectators.filter(spectator => spectator.id !== id);
+    req.room.spectators = req.room.spectators.filter(s => s.id !== spectator.id);
+    closeRoomIfNecessary(req.room);
   });
 
   keepAlive();
 }
 
 function handleParticipant(req: Request, res: Response) {
-  const id = Date.now();
   const { name } = req.query;
 
   if (typeof name !== 'string') {
     throw new Error('Invalid type for argument `name`');
   }
 
-  const participant = new Participant(id, name, res);
-  participants.push(participant);
-  estimations.push(new Estimation(participant));
+  const participant = new Participant(name, res);
+  req.room.participants.push(participant);
 
   writeEventStreamHeaders(res);
-  writeId(res, id);
-  sendEstimations();
+  writeId(res, participant.id);
+  sendParticipants(req.room);
+  sendRooms();
 
   req.on('close', () => {
-    participants = participants.filter(participant => participant.id !== id);
-    estimations = estimations.filter(estimation => estimation.participant.id !== id);
-    sendEstimations();
+    req.room.participants = req.room.participants.filter(p => p.id !== participant.id);
+    sendParticipants(req.room);
+    closeRoomIfNecessary(req.room);
   });
 
   keepAlive();
 }
 
-function handleReset(_: Request, res: Response) {
-  estimations.forEach(estimation => {
-    estimation.value = undefined;
-  });
-
-  sendEstimations();
-  sendIds();
-  res.sendStatus(200);
-}
-
 function handleEstimation(req: Request, res: Response) {
-  const { id, value } = req.body;
+  const { id, estimate } = req.body;
 
-  if (typeof value !== 'number') {
+  if (typeof estimate !== 'number') {
     throw new Error('Invalid type for argument `value`');
   }
 
-  estimations.some(estimation => {
-    if (estimation.participant.id === id) {
-      estimation.value = value;
+  req.room.participants.some(participant => {
+    if (participant.id === id) {
+      participant.estimate = estimate;
       return true;
     }
   });
 
-  sendEstimations();
+  sendParticipants(req.room);
+  res.sendStatus(200);
+}
+
+function handleReset(req: Request, res: Response) {
+  req.room.participants.forEach(participant => {
+    participant.estimate = undefined;
+  });
+
+  sendParticipants(req.room);
+  sendIds(req.room);
   res.sendStatus(200);
 }
 
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.get('/spectator', handleSpectator);
-app.get('/participant', handleParticipant);
-app.post('/reset', handleReset);
-app.post('/estimation', handleEstimation);
+app.get('/guest', handleGuest);
+app.get('/:roomId/spectator', useRoom, handleSpectator);
+app.get('/:roomId/participant', useRoom, handleParticipant);
+app.post('/:roomId/estimation', useRoom, handleEstimation);
+app.post('/:roomId/reset', useRoom, handleReset);
 app.listen(PORT, () => {
   console.log(`Server listening at http://localhost:${PORT}`);
 });
