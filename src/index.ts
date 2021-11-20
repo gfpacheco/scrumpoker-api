@@ -1,15 +1,17 @@
-const express = require('express');
-const bodyParser = require('body-parser');
-const cors = require('cors');
+import cors from 'cors';
+import express, { Request, Response } from 'express';
+import Estimation from './Estimation';
+import Participant from './Participant';
+import Spectator from './Spectator';
 
 const { PORT = 3001 } = process.env;
 
-let spectators = [];
-let participants = [];
-let estimations = [];
-let keepAliveTimeout;
+let spectators: Spectator[] = [];
+let participants: Participant[] = [];
+let estimations: Estimation[] = [];
+let keepAliveTimeout: NodeJS.Timeout | undefined;
 
-function writeEventStreamHeaders(res) {
+function writeEventStreamHeaders(res: Response) {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     Connection: 'keep-alive',
@@ -17,7 +19,7 @@ function writeEventStreamHeaders(res) {
   });
 }
 
-function writeEstimations(res) {
+function writeEstimations(res: Response) {
   res.write(`data: ${JSON.stringify(estimations)}\n\n`);
 }
 
@@ -25,7 +27,7 @@ function sendEstimations() {
   spectators.forEach(({ res }) => writeEstimations(res));
 }
 
-function writeId(res, id) {
+function writeId(res: Response, id: number) {
   res.write(`data: ${JSON.stringify(id)}\n\n`);
 }
 
@@ -47,9 +49,9 @@ function sendIds() {
   participants.forEach(({ id, res }) => writeId(res, id));
 }
 
-function handleSpectator(req, res) {
+function handleSpectator(req: Request, res: Response) {
   const id = Date.now();
-  spectators.push({ id, res });
+  spectators.push(new Spectator(id, res));
 
   writeEventStreamHeaders(res);
   writeEstimations(res);
@@ -61,11 +63,17 @@ function handleSpectator(req, res) {
   keepAlive();
 }
 
-function handleParticipant(req, res) {
+function handleParticipant(req: Request, res: Response) {
   const id = Date.now();
   const { name } = req.query;
-  participants.push({ id, name, res });
-  estimations.push({ participant: { id, name } });
+
+  if (typeof name !== 'string') {
+    throw new Error('Invalid type for argument `name`');
+  }
+
+  const participant = new Participant(id, name, res);
+  participants.push(participant);
+  estimations.push(new Estimation(participant));
 
   writeEventStreamHeaders(res);
   writeId(res, id);
@@ -80,20 +88,30 @@ function handleParticipant(req, res) {
   keepAlive();
 }
 
-function handleReset(req, res) {
-  estimations = participants.map(({ id, name }) => ({ participant: { id, name } }));
+function handleReset(_: Request, res: Response) {
+  estimations.forEach(estimation => {
+    estimation.value = undefined;
+  });
+
   sendEstimations();
   sendIds();
   res.sendStatus(200);
 }
 
-function handleEstimation(req, res) {
+function handleEstimation(req: Request, res: Response) {
   const { id, value } = req.body;
-  estimations.forEach(estimation => {
+
+  if (typeof value !== 'number') {
+    throw new Error('Invalid type for argument `value`');
+  }
+
+  estimations.some(estimation => {
     if (estimation.participant.id === id) {
       estimation.value = value;
+      return true;
     }
   });
+
   sendEstimations();
   res.sendStatus(200);
 }
