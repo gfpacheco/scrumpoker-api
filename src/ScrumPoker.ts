@@ -15,7 +15,7 @@ export default class ScrumPoker {
     );
   }
 
-  getOrCreateRoom(roomId: number) {
+  getOrCreateRoom(roomId: string) {
     const existingRoom = this.rooms.find(r => r.id === roomId);
 
     if (existingRoom) {

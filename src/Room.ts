@@ -5,5 +5,5 @@ export default class Room {
   spectators: Spectator[] = [];
   participants: Participant[] = [];
 
-  constructor(public id: number) {}
+  constructor(public id: string) {}
 }

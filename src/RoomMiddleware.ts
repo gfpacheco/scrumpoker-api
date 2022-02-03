@@ -5,8 +5,7 @@ export default class RoomMiddleware {
   constructor(public scrumPoker: ScrumPoker) {}
 
   addRoomToContext = (req: Request, res: Response, next: NextFunction) => {
-    const roomId = parseInt(req.params.roomId);
-    req.room = this.scrumPoker.getOrCreateRoom(roomId);
+    req.room = this.scrumPoker.getOrCreateRoom(req.params.roomId);
     next();
   };
 }
